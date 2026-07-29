@@ -7,7 +7,7 @@ from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.model_selection import train_test_split
 
-# ===== 配置 =====
+# ===== Configuration =====
 SMILES_COL = "smiles"
 TARGET_COL = "y"
 TEST_SIZE = 0.2
@@ -15,7 +15,7 @@ RANDOM_STATE = 42
 
 
 def get_scaffold(smiles: str):
-    """从 SMILES 生成 Bemis-Murcko scaffold，解析失败返回 None。"""
+    """Generate Bemis-Murcko scaffold from SMILES; return None on failure."""
     if not isinstance(smiles, str) or not smiles.strip():
         return None
     mol = Chem.MolFromSmiles(smiles)
@@ -26,16 +26,16 @@ def get_scaffold(smiles: str):
 
 def build_strata(df: pd.DataFrame) -> pd.Series:
     """
-    构造分层标签：scaffold + y
-    并处理低频 strata，避免 train_test_split(stratify=...) 报错。
+    Construct stratification labels: scaffold + y.
+    Merge low-frequency strata to avoid train_test_split(stratify=...) errors.
     """
     strata = df["scaffold"].astype(str) + "_" + df[TARGET_COL].astype(str)
 
-    # 至少保证每个 strata 有 2 个样本
+    # Ensure at least 2 samples per stratum
     counts = strata.value_counts()
     strata = strata.apply(lambda x: "other" if counts.get(x, 0) < 2 else x)
 
-    # 还需保证 test 集样本数 >= strata 类别数
+    # Ensure test set size >= number of stratum classes
     n_test = math.ceil(len(df) * TEST_SIZE)
     while True:
         class_counts = strata.value_counts()
@@ -46,7 +46,7 @@ def build_strata(df: pd.DataFrame) -> pd.Series:
         if non_other.empty:
             break
 
-        # 合并最小类别到 other
+        # Merge the rarest class into "other"
         rarest = non_other.idxmin()
         strata = strata.apply(lambda x: "other" if x == rarest else x)
 
@@ -54,26 +54,26 @@ def build_strata(df: pd.DataFrame) -> pd.Series:
 
 
 def process_classic_csv(input_path, train_out, test_out):
-    """对单个 classic.csv 执行 scaffold split。"""
-    # 1) 读取数据
+    """Perform scaffold split on a single classic.csv file."""
+    # 1) Load data
     df = pd.read_csv(input_path)
     if SMILES_COL not in df.columns or TARGET_COL not in df.columns:
-        raise ValueError(f"{input_path} 缺少必要列: {SMILES_COL}, {TARGET_COL}")
+        raise ValueError(f"{input_path} missing required columns: {SMILES_COL}, {TARGET_COL}")
 
-    # 2) 计算 scaffold
+    # 2) Compute scaffold
     raw_n = len(df)
     df["scaffold"] = df[SMILES_COL].apply(get_scaffold)
 
-    # 3) 去掉无法解析 SMILES 的数据
+    # 3) Remove samples with unparseable SMILES
     df = df.dropna(subset=["scaffold"]).copy()
     invalid_n = raw_n - len(df)
     if len(df) < 2:
-        raise ValueError(f"{input_path}: 有效样本不足 2 条，无法划分训练/测试集。")
+        raise ValueError(f"{input_path}: fewer than 2 valid samples; cannot split into train/test.")
 
-    # 4) scaffold + y 分层标签
+    # 4) Build scaffold + y stratification labels
     df["strata"] = build_strata(df)
 
-    # 5) 分层切分 80/20
+    # 5) Stratified 80/20 split
     train_df, test_df = train_test_split(
         df,
         test_size=TEST_SIZE,
@@ -81,17 +81,17 @@ def process_classic_csv(input_path, train_out, test_out):
         stratify=df["strata"],
     )
 
-    # 6) 删除辅助列并保存（保留 scaffold，删除 strata 和 name）
+    # 6) Drop auxiliary columns and save (keep scaffold, remove strata and name)
     train_df = train_df.drop(columns=["strata", "name"], errors="ignore")
     test_df = test_df.drop(columns=["strata", "name"], errors="ignore")
 
     train_df.to_csv(train_out, index=False)
     test_df.to_csv(test_out, index=False)
 
-    print(f"[{os.path.dirname(input_path)}] 完成")
-    print(f"  有效样本数: {len(df)}, 无效 SMILES 数: {invalid_n}")
-    print(f"  训练集: {len(train_df)} -> {train_out}")
-    print(f"  测试集: {len(test_df)} -> {test_out}")
+    print(f"[{os.path.dirname(input_path)}] Done")
+    print(f"  Valid samples: {len(df)}, Invalid SMILES: {invalid_n}")
+    print(f"  Train set: {len(train_df)} -> {train_out}")
+    print(f"  Test set:  {len(test_df)} -> {test_out}")
     print()
 
 
@@ -100,10 +100,10 @@ def main():
     classic_files = sorted(base_dir.glob("*/classic.csv"))
 
     if not classic_files:
-        print("未找到任何 */classic.csv 文件。")
+        print("No */classic.csv files found.")
         return
 
-    print(f"找到 {len(classic_files)} 个 classic.csv 文件\n")
+    print(f"Found {len(classic_files)} classic.csv file(s)\n")
 
     for classic_path in classic_files:
         parent_dir = classic_path.parent
@@ -113,9 +113,9 @@ def main():
         try:
             process_classic_csv(str(classic_path), str(train_out), str(test_out))
         except Exception as e:
-            print(f"[{parent_dir}] 处理失败: {e}\n")
+            print(f"[{parent_dir}] Processing failed: {e}\n")
 
-    print("全部处理完成。")
+    print("All processing completed.")
 
 
 if __name__ == "__main__":

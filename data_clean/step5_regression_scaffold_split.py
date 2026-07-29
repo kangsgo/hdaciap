@@ -8,14 +8,14 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
-# ===== 配置 =====
+# ===== Configuration =====
 SMILES_COL = "smiles"
 VALID_SIZE = 0.2
 RANDOM_SEED = 42
 
 
 def get_scaffold(smiles: str):
-    """从 SMILES 生成 Bemis-Murcko scaffold，解析失败返回 None。"""
+    """Generate Bemis-Murcko scaffold from SMILES; return None on failure."""
     if not isinstance(smiles, str) or not smiles.strip():
         return None
     mol = Chem.MolFromSmiles(smiles)
@@ -26,9 +26,9 @@ def get_scaffold(smiles: str):
 
 def light_scaffold_split(data: pd.DataFrame, valid_size: float = 0.2):
     """
-    按 scaffold 进行简单划分：
-    - 同一 scaffold 不会被拆散
-    - 输出 train_df, valid_df（包含 split 列）
+    Simple scaffold-based split:
+    - Molecules sharing the same scaffold stay together
+    - Returns train_df, valid_df (with a 'split' column)
     """
     scaffolds = defaultdict(list)
     for idx, row in data.iterrows():
@@ -58,22 +58,22 @@ def light_scaffold_split(data: pd.DataFrame, valid_size: float = 0.2):
 
 
 def process_reg_csv(input_path: str, output_path: str):
-    """对单个 reg.csv 执行 scaffold split，并写出 reg_scaffold.csv。"""
+    """Perform scaffold split on a single reg.csv and write reg_scaffold.csv."""
     df = pd.read_csv(input_path, sep=None, engine="python")
     if SMILES_COL not in df.columns:
-        raise ValueError(f"{input_path} 缺少必要列: {SMILES_COL}")
+        raise ValueError(f"{input_path} missing required column: {SMILES_COL}")
 
     raw_n = len(df)
     df["scaffold"] = df[SMILES_COL].apply(get_scaffold)
 
-    # 去掉无法解析 SMILES 的样本
+    # Remove samples with unparseable SMILES
     df = df.dropna(subset=["scaffold"]).copy()
     invalid_n = raw_n - len(df)
 
     if len(df) < 2:
-        raise ValueError(f"{input_path}: 有效样本不足 2 条，无法进行骨架拆分。")
+        raise ValueError(f"{input_path}: fewer than 2 valid samples; cannot perform scaffold split.")
 
-    # 固定随机种子，保证可复现
+    # Fix random seed for reproducibility
     random.seed(RANDOM_SEED)
     train_df, valid_df = light_scaffold_split(df, valid_size=VALID_SIZE)
 
@@ -81,10 +81,10 @@ def process_reg_csv(input_path: str, output_path: str):
     merged = merged.drop(columns=["name"], errors="ignore")
     merged.to_csv(output_path, index=False)
 
-    print(f"[{os.path.dirname(input_path)}] 完成")
-    print(f"  有效样本数: {len(df)}, 无效 SMILES 数: {invalid_n}")
-    print(f"  train: {len(train_df)}, valid: {len(valid_df)}")
-    print(f"  输出: {output_path}")
+    print(f"[{os.path.dirname(input_path)}] Done")
+    print(f"  Valid samples: {len(df)}, Invalid SMILES: {invalid_n}")
+    print(f"  Train: {len(train_df)}, Valid: {len(valid_df)}")
+    print(f"  Output: {output_path}")
     print()
 
 
@@ -93,10 +93,10 @@ def main():
     reg_files = sorted(base_dir.glob("*/re5.csv"))
 
     if not reg_files:
-        print("未找到任何 */re5.csv 文件。")
+        print("No */re5.csv files found.")
         return
 
-    print(f"找到 {len(reg_files)} 个 re5.csv 文件\n")
+    print(f"Found {len(reg_files)} re5.csv file(s)\n")
 
     for reg_path in reg_files:
         parent_dir = reg_path.parent
@@ -104,9 +104,9 @@ def main():
         try:
             process_reg_csv(str(reg_path), str(out_path))
         except Exception as e:
-            print(f"[{parent_dir}] 处理失败: {e}\n")
+            print(f"[{parent_dir}] Processing failed: {e}\n")
 
-    print("全部处理完成。")
+    print("All processing completed.")
 
 
 if __name__ == "__main__":
