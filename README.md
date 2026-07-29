@@ -23,11 +23,21 @@ Run them in order:
 
 ## Usage
 
-```bash
-# 1. Activate environment
-conda activate prolif
+### install by Docker
 
-# 2. Place molecules.csv in data_clean/ and run the pipeline
+```bash
+cd docker
+
+docker build .
+```
+
+### 1. Activate environment
+```bash
+docker run -it --gpus all --rm -v your_local_dir:/app pyg-image
+```
+
+### 2. Place molecules.csv in data_clean/ and run the pipeline
+```
 cd data_clean
 python step1_split.py                         # Split by target
 python step2_classification_dataset.py        # Build classification dataset

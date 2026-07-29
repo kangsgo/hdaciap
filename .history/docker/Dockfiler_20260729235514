@@ -1,0 +1,26 @@
+# FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:12.6.2-cudnn-devel-ubuntu22.04
+
+# Set up environment
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python and system dependencies
+RUN apt-get update && \
+    apt-get install -y python3 python3-pip python3-dev git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip && pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+
+# Install PyTorch (CUDA 12.1)
+RUN pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+
+# Install PyTorch Geometric and dependencies
+RUN pip install torch_geometric
+RUN pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.6.0+cu126.html
+
+# Install additional Python packages
+RUN pip install numpy pandas matplotlib scikit-learn openpyxl seaborn tqdm rdkit==2024.9.6 optuna
+
+# Set up working directory
+WORKDIR /app
