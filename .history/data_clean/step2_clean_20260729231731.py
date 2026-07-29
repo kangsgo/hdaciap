@@ -1,17 +1,22 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-遍历所有目录，查找文件名以 molecules.csv 结尾的文件并清洗数据：
-1. 读取 activity 列：
-   - 若 activity 是 "Active"/"Inactive"，直接保留；
-   - 若 activity 不是上述值，则仅当 activity_name 在 {"IC50", "EC50", "Ki"} 时保留，否则删除。
-2. 仅对“activity 不是 Active/Inactive 且被保留”的数据处理 activity_value：
-   - activity_value 为空或非数值 -> 删除该行
-   - activity_value >= 10 -> activity 设为 "Inactive"
-   - activity_value < 10  -> activity 设为 "Active"
-3. 在对应目录下保存为 classic1.csv
+Clean all *molecules.csv files and produce classic1.csv outputs.
 
-用法：
+Processing rules
+----------------
+1. Activity column logic:
+   - Rows with activity "Active" or "Inactive" are retained as-is.
+   - Otherwise, only rows whose activity_name is in {IC50, EC50, Ki} are
+     retained; all others are discarded.
+2. For retained rows whose activity is NOT "Active"/"Inactive":
+   - If activity_value is empty or non-numeric, the row is dropped.
+   - activity_value >= 10  →  activity = "Inactive"
+   - activity_value < 10   →  activity = "Active"
+3. Results are written as classic1.csv in the same directory as the source.
+
+Usage
+-----
     python step2_clean.py
 """
 
@@ -25,7 +30,7 @@ ALLOWED_ACTIVITY_NAME = {"IC50", "EC50", "Ki"}
 
 def read_table_auto(input_path: str) -> pd.DataFrame:
     """
-    优先按制表符读取；若失败则回退到逗号分隔。
+    Read a delimited file with tab-separator preference; fall back to comma.
     """
     try:
         return pd.read_csv(input_path, sep="\t")
@@ -35,64 +40,65 @@ def read_table_auto(input_path: str) -> pd.DataFrame:
 
 def process_file(input_path: str, output_path: str) -> None:
     """
-    清洗单个 molecules.csv 文件并输出 classic1.csv。
+    Clean a single *molecules.csv file and write classic1.csv.
     """
     try:
         df = read_table_auto(input_path)
     except Exception as e:
-        print(f"  [错误] 读取失败，跳过: {input_path} | {e}")
+        print(f"  [ERROR] Failed to read, skipping: {input_path} | {e}")
         return
 
     required_cols = {"activity", "activity_name", "activity_value"}
     if not required_cols.issubset(df.columns):
         missing = required_cols - set(df.columns)
-        print(f"  [错误] 缺少必要列 {missing}，跳过: {input_path}")
+        print(f"  [ERROR] Missing required columns {missing}, skipping: {input_path}")
         return
 
     total_rows = len(df)
 
-    # 统一转为字符串后去首尾空白，避免空值/类型导致判断异常
+    # Cast to string and strip whitespace to avoid type/null issues
     activity = df["activity"].astype(str).str.strip()
     activity_name = df["activity_name"].astype(str).str.strip()
 
-    # 规则1：activity 为 Active/Inactive 的行直接保留
+    # Rule 1: retain rows with standard activity directly
     mask_valid_activity = activity.isin(ALLOWED_ACTIVITY)
     df_standard = df.loc[mask_valid_activity].copy()
 
-    # activity 非 Active/Inactive 时，仅保留 activity_name 在允许集合中的行
+    # For non-standard activity, keep only rows with allowed activity_name
     mask_non_standard = ~mask_valid_activity
     mask_valid_name = activity_name.isin(ALLOWED_ACTIVITY_NAME)
     df_non_standard = df.loc[mask_non_standard & mask_valid_name].copy()
 
-    # 仅对非标准 activity 的保留行进行 activity_value 数值化与过滤
+    # Convert activity_value to numeric and drop non-numeric rows
     df_non_standard["activity_value"] = pd.to_numeric(
         df_non_standard["activity_value"], errors="coerce"
     )
     df_non_standard = df_non_standard.dropna(subset=["activity_value"])
 
-    # 按 activity_value 给非标准 activity 行重标注 activity
+    # Relabel activity based on activity_value threshold
     df_non_standard["activity"] = "Active"
     df_non_standard.loc[df_non_standard["activity_value"] >= 10, "activity"] = "Inactive"
 
-    # 合并两部分结果：标准行 + 处理后的非标准行
+    # Merge standard rows with processed non-standard rows
     df_kept = pd.concat([df_standard, df_non_standard], ignore_index=True)
 
-    # 删除 activity_value 为空且 activity 为 "Active" 的行
+    # Drop rows where activity is "Active" but activity_value is missing
     mask_empty_value_active = df_kept["activity"].eq("Active") & df_kept["activity_value"].isna()
     df_kept = df_kept.loc[~mask_empty_value_active]
 
     kept_rows = len(df_kept)
     deleted_rows = total_rows - kept_rows
 
-    # 输出为 classic1.csv（制表符分隔，保持与原始数据风格一致）
+    # Write classic1.csv as tab-delimited, consistent with the source format
     df_kept.to_csv(output_path, index=False, sep="\t", encoding="utf-8")
-    print(f"    保留: {kept_rows} 行, 删除: {deleted_rows} 行 -> {output_path}")
+    print(f"    Kept: {kept_rows} rows, Removed: {deleted_rows} rows -> {output_path}")
 
 
 def find_target_files(base_dir: str):
     """
-    递归遍历目录，返回所有文件名以 molecules.csv 结尾的文件路径。
-    例如：molecules.csv、HDAC1_molecules.csv、SIRT2_molecules.csv
+    Recursively find all files whose names end with 'molecules.csv'.
+
+    Examples: molecules.csv, HDAC1_molecules.csv, SIRT2_molecules.csv
     """
     targets = []
     for root, _, files in os.walk(base_dir):
@@ -107,16 +113,16 @@ def main() -> None:
     all_files = find_target_files(base_dir)
 
     if not all_files:
-        print("[信息] 未找到任何以 molecules.csv 结尾的文件。")
+        print("[INFO] No files ending with molecules.csv found.")
         return
 
-    print(f"[信息] 共找到 {len(all_files)} 个文件待处理。\n")
+    print(f"[INFO] Found {len(all_files)} file(s) to process.\n")
     for input_path in all_files:
         output_path = os.path.join(os.path.dirname(input_path), "classic1.csv")
-        print(f"处理: {input_path}")
+        print(f"Processing: {input_path}")
         process_file(input_path, output_path)
 
-    print("\n[完成] 所有文件处理完毕。")
+    print("\n[DONE] All files processed.")
 
 
 if __name__ == "__main__":

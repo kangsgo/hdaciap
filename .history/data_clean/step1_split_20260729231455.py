@@ -77,7 +77,7 @@ def main():
 
         n_rows = len(rows)
         total_rows_written += n_rows
-        print(f"  → {safe_name}: {n_rows} rows -> {out_file}")
+        print(f"  → {safe_name}: {n_rows} 行 -> {out_file}")
 
     print(
         f"[DONE] Wrote {total_rows_written} rows "
