@@ -22,7 +22,7 @@ from sklearn.preprocessing import StandardScaler
 
 # PyG
 from torch_geometric.data import Data, Batch
-from torch_geometric.nn import NNConv, global_mean_pool, global_add_pool, global_max_pool
+from torch_geometric.nn import RGCNConv, global_mean_pool, global_add_pool, global_max_pool
 
 # ============================================================================
 # 1. 改进的权重初始化
@@ -40,45 +40,47 @@ def init_weight(m):
         nn.init.constant_(m.bias, 0)
 
 # ============================================================================
-# 2. 改进的 MPNN 特征提取器
+# 2. RGCN 特征提取器 (Relational Graph Convolutional Network)
 # ============================================================================
-class MPNN_FeatureExtractor(nn.Module):
+class RGCN_FeatureExtractor(nn.Module):
+    """使用 RGCN 提取分子图特征。
+
+    边关系类型从 bond features 的前 4 维 one-hot 推导：
+    0=单键, 1=双键, 2=三键, 3=芳香键。
+    """
     def __init__(
         self,
         input_dim=69,
         hidden_dim=32,
         mlp_hidden=128,
-        edge_dim=6,
+        num_relations=4,
+        num_layers=3,
         dropout=0.4,
-        num_steps=3,       # message passing 步数
-        use_residual=True, # 残差连接
+        use_residual=True,
         use_batch_norm=True,
         pooling='mean'
     ):
         super().__init__()
         self.use_residual = use_residual
         self.pooling = pooling
-        self.num_steps = num_steps
+        self.num_layers = num_layers
+        self.num_relations = num_relations
 
-        # 将边特征映射为 NNConv 需要的卷积核参数
-        self.edge_mlp = nn.Sequential(
-            nn.Linear(edge_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim * hidden_dim)
-        )
-
-        # MPNN 核心：NNConv + GRU 更新
-        self.node_proj = nn.Linear(input_dim, hidden_dim)
-        self.mpnn = NNConv(hidden_dim, hidden_dim, self.edge_mlp, aggr='mean')
-        self.gru = nn.GRU(hidden_dim, hidden_dim)
-
-        self.bn = nn.BatchNorm1d(hidden_dim) if use_batch_norm else nn.Identity()
-
-        # 残差投影
+        # 残差投影（首层输入 → hidden_dim 对齐）
         if use_residual and input_dim != hidden_dim:
             self.residual_proj = nn.Linear(input_dim, hidden_dim)
         else:
             self.residual_proj = None
+
+        # RGCN 层堆叠
+        self.convs = nn.ModuleList()
+        self.bns = nn.ModuleList()
+        for i in range(num_layers):
+            in_dim = input_dim if i == 0 else hidden_dim
+            self.convs.append(RGCNConv(in_dim, hidden_dim, num_relations))
+            self.bns.append(
+                nn.BatchNorm1d(hidden_dim) if use_batch_norm else nn.Identity()
+            )
 
         # 池化输出维度
         if pooling == 'concat':
@@ -100,29 +102,30 @@ class MPNN_FeatureExtractor(nn.Module):
 
         self.out_dim = mlp_hidden // 2
 
+    @staticmethod
+    def _bond_to_edge_type(edge_attr):
+        """边特征 [N, 6] → 关系类型索引 [N]，基于前 4 维 bond type one-hot."""
+        if edge_attr.size(0) == 0:
+            return torch.empty(0, dtype=torch.long, device=edge_attr.device)
+        return edge_attr[:, :4].argmax(dim=1)
+
     def forward(self, x, edge_index, batch, edge_attr):
+        edge_type = self._bond_to_edge_type(edge_attr)
         identity = x
-        x = self.node_proj(x)
-        hidden = x.unsqueeze(0)
 
-        # 多步 message passing
-        for _ in range(self.num_steps):
-            m = self.mpnn(x, edge_index, edge_attr)
-            m = F.relu(m)
-            out, hidden = self.gru(m.unsqueeze(0), hidden)
-            x = out.squeeze(0)
+        for i, (conv, bn) in enumerate(zip(self.convs, self.bns)):
+            x = conv(x, edge_index, edge_type)
+            x = bn(x)
+            x = F.relu(x)
+            x = F.dropout(x, p=0.1, training=self.training)
 
-        x = self.bn(x)
-
-        # 残差连接
-        if self.use_residual:
-            if self.residual_proj is not None:
-                identity = self.residual_proj(identity)
-            elif identity.shape[-1] != x.shape[-1]:
-                identity = self.node_proj(identity)
-            x = x + identity
-
-        x = F.relu(x)
+            # 残差连接（维度匹配时生效）
+            if self.use_residual:
+                if i == 0 and self.residual_proj is not None:
+                    identity = self.residual_proj(identity)
+                if x.shape[-1] == identity.shape[-1]:
+                    x = x + identity
+                identity = x
 
         # 图级别池化
         if self.pooling == 'mean':
@@ -182,7 +185,7 @@ class AttentionFusion(nn.Module):
 class FusionModel(nn.Module):
     def __init__(
         self,
-        mode='fusion',  # 'graph', 'only', 'desc', 'fp'
+        mode='fusion',  # 'graph', 'fp', 'desc', 'fp'
         aux_dim=0,
         num_classes=2,
         # Graph encoder params
@@ -203,11 +206,12 @@ class FusionModel(nn.Module):
         self.num_classes = num_classes
         self.use_attention_fusion = use_attention_fusion
         
-        # Graph encoder (MPNN)
-        self.graph_encoder = MPNN_FeatureExtractor(
+        # Graph encoder (RGCN)
+        self.graph_encoder = RGCN_FeatureExtractor(
             hidden_dim=graph_hidden,
             dropout=graph_dropout,
-            num_steps=3,
+            num_layers=3,
+            num_relations=4,
             use_residual=True,
             use_batch_norm=True,
             pooling='concat'  # 使用多种池化的组合
@@ -230,10 +234,10 @@ class FusionModel(nn.Module):
             self.aux_encoder = None
             self.fusion = None
             self.graph_proj = None
-        elif mode == "only":
+        elif mode == "fp":
             # 仅使用 FP 特征
             if aux_dim <= 0:
-                raise ValueError("mode='only' 时必须提供有效的 FP 维度 aux_dim。")
+                raise ValueError("mode='fp' 时必须提供有效的 FP 维度 aux_dim。")
             self.head = nn.Sequential(
                 nn.Linear(aux_dim, fusion_hidden),
                 nn.BatchNorm1d(fusion_hidden),
@@ -291,9 +295,9 @@ class FusionModel(nn.Module):
         self.apply(init_weight)
 
     def forward(self, graph, aux_data=None, return_attention=False):
-        if self.mode == "only":
+        if self.mode == "fp":
             if aux_data is None:
-                raise ValueError("mode='only' 需要传入 FP 特征 aux_data。")
+                raise ValueError("mode='fp' 需要传入 FP 特征 aux_data。")
             logits = self.head(aux_data)
             return logits if not return_attention else (logits, None)
 
